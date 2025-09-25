@@ -1,0 +1,170 @@
+\documentclass[12pt]{article}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\geometry{margin=1in}
+
+% ---------------- Code styling ----------------
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codeblue}{rgb}{0,0,0.6}
+\definecolor{codered}{rgb}{0.9,0,0}
+
+\lstset{
+  language=Python,
+  backgroundcolor=\color{white},
+  commentstyle=\color{codegray},
+  keywordstyle=\color{codeblue},
+  stringstyle=\color{codered},
+  numberstyle=\tiny\color{codegray},
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  captionpos=b,
+  keepspaces=true,
+  numbers=left,
+  numbersep=6pt,
+  showstringspaces=false,
+  tabsize=2
+}
+
+\title{WTI Crude Oil Vanilla Option Pricing using the Ornstein--Uhlenbeck Model}
+\author{}
+\date{August 21, 2025}
+
+\begin{document}
+\maketitle
+
+
+\section{The Ornstein--Uhlenbeck (OU) Process}
+The OU process captures mean reversion:
+\begin{equation}
+  dX_t = \theta(\mu - X_t)\,dt + \sigma\, dW_t,
+\end{equation}
+where $\theta>0$ is the mean--reversion rate, $\mu$ the long--run mean, $\sigma$ the diffusion scale, and $W_t$ a Wiener process. Key properties:
+\begin{itemize}
+  \item \textbf{Mean reversion:} $\theta(\mu - X_t)$ pulls $X_t$ toward $\mu$.
+  \item \textbf{Constant volatility:} Shock size is governed by constant $\sigma$.
+  \item \textbf{Gaussian marginals:} $X_t$ is normally distributed at fixed $t$.
+\end{itemize}
+
+\paragraph{Transition distribution.} For $T>t$,
+\begin{align}
+  X_T &= \mu + (X_t-\mu)e^{-\theta (T-t)} + 
+  \sigma \int_t^T e^{-\theta (T-s)}\, dW_s, \\
+  \mathbb{E}[X_T\mid X_t] &= \mu + (X_t-\mu)e^{-\theta \tau},\\
+  \mathrm{Var}[X_T\mid X_t] &= \frac{\sigma^2}{2\theta}\bigl(1-e^{-2\theta \tau}\bigr),
+\end{align}
+with $\tau=T-t$.
+
+\section{Why OU for Commodities}
+Futures prices for storable commodities exhibit forces (storage, convenience yield, production/consumption dynamics) that create pull toward equilibria. Modeling either the futures price $F_t$ or its transform (e.g., log) as OU injects mean reversion absent from geometric Brownian motion.
+
+\section{European Options on Mean-Reverting Futures}
+Assume the \emph{futures price} follows OU under the risk-neutral measure:
+\begin{equation}
+  dF_t = \theta(\mu - F_t)\,dt + \sigma\, dW_t.
+\end{equation}
+Then $F_T\mid F_t \sim \mathcal{N}\!\left(m,\,v\right)$ with
+\begin{equation}
+  m=\mu+(F_t-\mu)e^{-\theta \tau},\qquad
+  v=\frac{\sigma^2}{2\theta}\bigl(1-e^{-2\theta \tau}\bigr).
+\end{equation}
+
+\paragraph{Call/put valuation.} For a European option with strike $K$ and maturity $T$,
+\begin{align}
+  C &= \mathbb{E}\big[(F_T-K)^+\big]
+  = (m-K)\,\Phi(d) + \sqrt{v}\,\phi(d),\\
+  P &= \mathbb{E}\big[(K-F_T)^+\big]
+  = (K-m)\,\Phi(-d) + \sqrt{v}\,\phi(d),\\
+  d &= \frac{m-K}{\sqrt{v}},
+\end{align}
+where $\Phi$ and $\phi$ are the standard normal CDF and PDF. These formulas are analogous to Black–Scholes on futures but use the OU transition mean/variance. (If discounting is needed, multiply by $e^{-r\tau}$.)
+
+\section{Differences vs.\ Black--Scholes}
+\begin{itemize}
+  \item \textbf{Mean reversion:} OU embeds pull toward $\mu$; GBM does not.
+  \item \textbf{Distributional shape:} OU yields normal $F_T$ (or normal log if modeling $\log F_t$); GBM yields lognormal.
+  \item \textbf{Volatility structure:} OU uses level-independent $\sigma$; GBM uses proportional (percent) volatility.
+  \item \textbf{Estimation:} OU parameters $(\theta,\mu,\sigma)$ are typically estimated by time-series regression/MLE on futures data.
+\end{itemize}
+
+\section{Parameter Estimation by Regression (Discretized OU)}
+Let $\Delta X_t = X_{t+\Delta}-X_t$ with step $\Delta$. From the Euler discretization,
+\[
+  \frac{\Delta X_t}{\Delta} \approx \theta(\mu - X_t) + \frac{\sigma}{\sqrt{\Delta}}\varepsilon_t,
+\]
+suggesting an OLS of $(\Delta X_t/\Delta)$ on a constant and $X_t$:
+\[
+  \frac{\Delta X_t}{\Delta} = a + b X_t + \varepsilon_t
+  \quad\Rightarrow\quad
+  \theta = -b,\ \ \mu = \frac{a}{\theta},\ \
+  \sigma^2 \approx \mathrm{Var}(\varepsilon_t)\,\Delta.
+\]
+
+\section{Python Reference Implementation}
+\begin{lstlisting}[caption=OU parameter estimation and option pricing on futures]
+import numpy as np
+import statsmodels.api as sm
+from scipy.stats import norm
+
+def estimate_ou_parameters(time_series, dt):
+    """
+    Estimate OU parameters (theta, mu, sigma) from a price series.
+    dt in years (e.g., 1/252 for daily trading steps).
+    """
+    x = np.asarray(time_series, dtype=float)
+    dX = np.diff(x)
+    dX_dt = dX / dt
+
+    X_t = sm.add_constant(x[:-1])        # [const, X_t]
+    model = sm.OLS(dX_dt, X_t).fit()
+    a, b = model.params                   # dX/dt = a + b X_t + eps
+
+    theta = -b
+    mu = a / theta if theta != 0 else np.mean(x)
+    sigma = np.sqrt(model.resid.var() * dt)
+    return float(theta), float(mu), float(sigma)
+
+def ou_option_price_on_futures(F_t, K, tau, theta, mu, sigma, option_type="call"):
+    """
+    Price a European option on a futures assumed to follow OU under Q.
+    Returns the undiscounted expectation E[(F_T-K)^+] or E[(K-F_T)^+].
+    """
+    if tau <= 0:
+        intrinsic = max(F_t - K, 0.0) if option_type == "call" else max(K - F_t, 0.0)
+        return float(intrinsic)
+
+    m = mu + (F_t - mu) * np.exp(-theta * tau)
+    if theta > 1e-12:
+        v = (sigma**2 / (2.0 * theta)) * (1.0 - np.exp(-2.0 * theta * tau))
+    else:
+        v = (sigma**2) * tau
+
+    v = max(v, 0.0)
+    s = np.sqrt(v) if v > 0 else 0.0
+    d = np.inf if (s == 0 and m > K) else (-np.inf if (s == 0 and m <= K) else (m - K) / s)
+
+    if option_type.lower() == "call":
+        return (m - K) * norm.cdf(d) + s * norm.pdf(d)
+    elif option_type.lower() == "put":
+        return (K - m) * norm.cdf(-d) + s * norm.pdf(d)
+    else:
+        raise ValueError("option_type must be 'call' or 'put'")
+\end{lstlisting}
+
+\section{Illustrative Workflow}
+\begin{enumerate}
+  \item Estimate $(\theta,\mu,\sigma)$ from a historical WTI futures series with \texttt{estimate\_ou\_parameters}.
+  \item For a given date, strike $K$, and maturity $\tau$ (in years), compute call/put via \texttt{ou\_option\_price\_on\_futures}.
+  \item Repeat across dates/strikes to populate OTM/ATM/ITM columns for analysis.
+\end{enumerate}
+
+\section{Notes and Caveats}
+\begin{itemize}
+  \item If modeling $\log F_t$ as OU, transform inputs/outputs accordingly; option formulas then use log-OU mean/variance.
+  \item Discounting by $e^{-r\tau}$ can be applied if pricing off spot rather than futures or if required by the use case.
+  \item Real markets may show time-varying volatility, jumps, seasonality, or term-structure effects; extensions (e.g., OU with stochastic $\sigma$, multi-factor models) can be layered as needed.
+\end{itemize}
+
+\end{document}
